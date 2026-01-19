@@ -8,6 +8,10 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+// Embedded default resources
+const DEFAULT_PROMPT: &str = include_str!("../prompt.md");
+const DEFAULT_PROGRESS_TEMPLATE: &str = include_str!("../progress.txt");
+
 #[derive(Parser)]
 #[command(name = "ramph", about = "Ralph workflow runner using Amp")]
 struct Cli {
@@ -31,11 +35,13 @@ struct RunArgs {
     #[arg(long, default_value = "prd.json")]
     prd: PathBuf,
 
-    #[arg(long, default_value = "progress.txt")]
-    progress: PathBuf,
+    /// Optional path to progress file (uses embedded default if not specified)
+    #[arg(long)]
+    progress: Option<PathBuf>,
 
-    #[arg(long, default_value = "prompt.md")]
-    prompt: PathBuf,
+    /// Optional path to prompt file (uses embedded default if not specified)
+    #[arg(long)]
+    prompt: Option<PathBuf>,
 
     #[arg(long, default_value_t = 25)]
     max_iterations: usize,
@@ -166,15 +172,21 @@ fn save_prd(path: &PathBuf, prd: &Prd) -> Result<()> {
     fs::write(path, content).context("Failed to write prd.json")
 }
 
-fn load_prompt(path: &PathBuf) -> Result<String> {
-    fs::read_to_string(path).context("Failed to read prompt.md")
+fn load_prompt(path: Option<&PathBuf>) -> Result<String> {
+    match path {
+        Some(p) => fs::read_to_string(p)
+            .with_context(|| format!("Failed to read custom prompt file: {}", p.display())),
+        None => Ok(DEFAULT_PROMPT.to_string()),
+    }
 }
 
 fn load_progress(path: &PathBuf) -> Result<String> {
     if path.exists() {
-        fs::read_to_string(path).context("Failed to read progress.txt")
+        fs::read_to_string(path)
+            .with_context(|| format!("Failed to read progress file: {}", path.display()))
     } else {
-        Ok(String::new())
+        // Start with embedded template if file doesn't exist yet
+        Ok(DEFAULT_PROGRESS_TEMPLATE.to_string())
     }
 }
 
@@ -284,10 +296,18 @@ async fn run_iteration(prompt: &str, cwd: &PathBuf) -> Result<String> {
 
 async fn run_command(args: RunArgs) -> Result<()> {
     let prd_path = args.cwd.join(&args.prd);
-    let progress_path = args.cwd.join(&args.progress);
-    let prompt_path = args.cwd.join(&args.prompt);
 
-    let base_prompt = load_prompt(&prompt_path)?;
+    // Determine progress file path (use default location if not specified)
+    let progress_path = match &args.progress {
+        Some(p) => args.cwd.join(p),
+        None => args.cwd.join("progress.txt"),
+    };
+
+    // Load prompt (from custom file or embedded default)
+    let base_prompt = match args.prompt.as_ref() {
+        Some(p) => load_prompt(Some(&args.cwd.join(p)))?,
+        None => load_prompt(None)?,
+    };
 
     for iteration in 1..=args.max_iterations {
         let prd = load_prd(&prd_path)?;

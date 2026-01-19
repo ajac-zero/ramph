@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
+use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+
+use crate::output;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Prd {
@@ -86,13 +89,56 @@ pub fn validate_prd(prd: &Prd) -> Result<()> {
 }
 
 pub fn display_prd_summary(prd: &Prd) {
-    eprintln!("\n[ramph] === PRD Summary ===");
-    eprintln!("Branch: {}", prd.branch_name);
-    eprintln!("Stories: {}\n", prd.stories.len());
+    if output::is_quiet() {
+        return;
+    }
+
+    eprintln!("\n{}", "=== PRD Summary ===".bold());
+    eprintln!(
+        "  {} {}",
+        "Branch:".dimmed(),
+        prd.branch_name.cyan()
+    );
+    eprintln!(
+        "  {} {}\n",
+        "Stories:".dimmed(),
+        prd.stories.len().to_string().cyan()
+    );
 
     for story in &prd.stories {
-        eprintln!("  {} [P{}]: {}", story.id, story.priority, story.title);
-        eprintln!("    Criteria: {} items", story.acceptance_criteria.len());
+        let status_icon = if story.passes {
+            "✓".green().bold()
+        } else {
+            "○".dimmed()
+        };
+
+        let priority_badge = format!("P{}", story.priority);
+        let priority_colored = match story.priority {
+            1 => priority_badge.red().bold(),
+            2 => priority_badge.yellow(),
+            3 => priority_badge.blue(),
+            _ => priority_badge.dimmed(),
+        };
+
+        let title = if story.passes {
+            story.title.green()
+        } else {
+            story.title.normal()
+        };
+
+        eprintln!(
+            "  {} {} [{}] {}",
+            status_icon,
+            story.id.bold(),
+            priority_colored,
+            title
+        );
+
+        eprintln!(
+            "      {} {} items",
+            "Criteria:".dimmed(),
+            story.acceptance_criteria.len()
+        );
     }
     eprintln!();
 }

@@ -1,9 +1,12 @@
-use amp_sdk::{AmpOptions, AssistantContent, StreamMessage, execute};
+use amp_sdk::{execute, AmpOptions, AssistantContent, StreamMessage};
 use anyhow::Result;
 use futures::StreamExt;
+use indicatif::ProgressBar;
 use std::path::PathBuf;
 
-pub async fn run_iteration(prompt: &str, cwd: &PathBuf) -> Result<String> {
+use crate::output;
+
+pub async fn run_iteration(prompt: &str, cwd: &PathBuf, spinner: Option<&ProgressBar>) -> Result<String> {
     let cwd_str = cwd.canonicalize()?.to_string_lossy().to_string();
 
     let options = AmpOptions::builder()
@@ -12,41 +15,46 @@ pub async fn run_iteration(prompt: &str, cwd: &PathBuf) -> Result<String> {
         .build();
 
     let mut stream = std::pin::pin!(execute(prompt, Some(options)));
-    let mut output = String::new();
+    let mut output_text = String::new();
 
     while let Some(result) = stream.next().await {
         match result {
             Ok(StreamMessage::System(msg)) => {
-                eprintln!("[ramph] session: {}", msg.session_id);
+                output::verbose(&format!("session: {}", msg.session_id));
             }
             Ok(StreamMessage::Assistant(msg)) => {
                 for content in &msg.message.content {
                     match content {
                         AssistantContent::Text(text) => {
-                            print!("{}", text.text);
-                            output.push_str(&text.text);
+                            if !output::is_quiet() {
+                                print!("{}", text.text);
+                            }
+                            output_text.push_str(&text.text);
                         }
                         AssistantContent::ToolUse(tool) => {
-                            eprintln!("[ramph] using tool: {}", tool.name);
+                            if let Some(s) = spinner {
+                                s.set_message(format!("Using tool: {}...", tool.name));
+                            }
+                            output::verbose(&format!("using tool: {}", tool.name));
                         }
                     }
                 }
             }
             Ok(StreamMessage::Result(msg)) => {
-                eprintln!(
-                    "[ramph] done: {}ms, {} turns",
+                output::verbose(&format!(
+                    "done: {}ms, {} turns",
                     msg.duration_ms, msg.num_turns
-                );
+                ));
                 if msg.is_error {
                     anyhow::bail!("Amp error: {}", msg.error.unwrap_or_default());
                 }
             }
             Err(e) => {
-                eprintln!("[ramph] error: {}", e);
+                output::error(&format!("stream error: {}", e));
             }
             _ => {}
         }
     }
 
-    Ok(output)
+    Ok(output_text)
 }

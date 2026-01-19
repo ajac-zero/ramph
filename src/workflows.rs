@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use chrono::Local;
+use colored::Colorize;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
 use crate::amp::run_iteration;
+use crate::output;
 use crate::prompts::*;
 use crate::types::*;
 
@@ -25,34 +27,64 @@ pub async fn run_command(
         None => load_prompt(None)?,
     };
 
+    let initial_prd = load_prd(&prd_path)?;
+    let total_stories = initial_prd.stories.len() as u64;
+    let completed_initial = initial_prd.stories.iter().filter(|s| s.passes).count() as u64;
+
+    output::header(&format!("=== ramph run ==="));
+    output::info(&format!(
+        "PRD: {} ({} stories, {} completed)",
+        prd_path.display(),
+        total_stories,
+        completed_initial
+    ));
+
+    let progress_bar = output::create_progress_bar(total_stories);
+    progress_bar.set_position(completed_initial);
+
     for iteration in 1..=max_iterations {
         let prd = load_prd(&prd_path)?;
 
         let Some(story) = prd.get_next_story() else {
-            eprintln!("[ramph] All stories complete!");
+            progress_bar.finish_and_clear();
+            output::success("All stories complete!");
             break;
         };
 
         let story_id = story.id.clone();
-        eprintln!(
-            "\n[ramph] === Iteration {}/{} ===",
+        let story_title = story.title.clone();
+
+        output::header(&format!(
+            "=== Iteration {}/{} ===",
             iteration, max_iterations
-        );
-        eprintln!("[ramph] Working on: {} - {}", story.id, story.title);
+        ));
+        output::story_status(&story_id, &story_title, output::StoryStatus::Running);
 
         let progress = load_progress(&progress_path)?;
         let prompt = build_iteration_prompt(&base_prompt, story, &progress);
 
-        match run_iteration(&prompt, &cwd).await {
+        let spinner = output::create_spinner(&format!("Working on {}...", story_id));
+
+        match run_iteration(&prompt, &cwd, Some(&spinner)).await {
             Ok(_output) => {
+                output::finish_spinner_success(
+                    &spinner,
+                    &format!("Completed: {} - {}", story_id, story_title),
+                );
+
                 let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
                 append_progress(
                     &progress_path,
                     &format!("\n## [{timestamp}] Completed: {story_id}\n"),
                 )?;
+
+                let prd = load_prd(&prd_path)?;
+                let completed = prd.stories.iter().filter(|s| s.passes).count() as u64;
+                progress_bar.set_position(completed);
             }
             Err(e) => {
-                eprintln!("[ramph] Iteration failed: {}", e);
+                output::finish_spinner_error(&spinner, &format!("Failed: {} - {}", story_id, e));
+
                 let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
                 append_progress(
                     &progress_path,
@@ -62,34 +94,69 @@ pub async fn run_command(
         }
     }
 
+    progress_bar.finish_and_clear();
+    print_final_summary(&prd_path)?;
+
+    Ok(())
+}
+
+fn print_final_summary(prd_path: &PathBuf) -> Result<()> {
+    let prd = load_prd(prd_path)?;
+    let total = prd.stories.len();
+    let completed = prd.stories.iter().filter(|s| s.passes).count();
+    let remaining = total - completed;
+
+    output::header("=== Summary ===");
+
+    if remaining == 0 {
+        eprintln!(
+            "  {} All {} stories completed!",
+            "✓".green().bold(),
+            total
+        );
+    } else {
+        eprintln!(
+            "  {} {}/{} stories completed, {} remaining",
+            "•".blue().bold(),
+            completed,
+            total,
+            remaining
+        );
+    }
+
     Ok(())
 }
 
 pub async fn run_plan_command(
     cwd: PathBuf,
-    output: PathBuf,
+    output_file: PathBuf,
     description: Option<String>,
     force: bool,
 ) -> Result<()> {
-    let output_path = cwd.join(&output);
+    let output_path = cwd.join(&output_file);
 
     check_output_file(&output_path, force).context("Output file validation failed")?;
 
-    // Run planning session
-    let prompt = build_planning_prompt(description);
-    eprintln!("\n[ramph] Starting planning conversation...");
-    eprintln!("[ramph] The AI agent will help you break down your project into stories.\n");
+    output::header("=== ramph plan ===");
+    output::info("Starting planning conversation...");
+    output::info("The AI agent will help you break down your project into stories.\n");
 
-    let conversation = run_iteration(&prompt, &cwd)
+    let prompt = build_planning_prompt(description);
+    let spinner = output::create_spinner("Planning session in progress...");
+
+    let conversation = run_iteration(&prompt, &cwd, Some(&spinner))
         .await
         .context("Planning session failed")?;
 
-    eprintln!("\n[ramph] Planning conversation complete!");
+    output::finish_spinner_success(&spinner, "Planning conversation complete!");
 
-    // Extract PRD from conversation
-    eprintln!("\n[ramph] Generating structured PRD from conversation...\n");
+    output::info("Generating structured PRD from conversation...\n");
+    let extraction_spinner = output::create_spinner("Extracting PRD...");
+
     let extraction_prompt = build_extraction_prompt(&conversation);
-    let json_response = run_iteration(&extraction_prompt, &cwd).await?;
+    let json_response = run_iteration(&extraction_prompt, &cwd, Some(&extraction_spinner)).await?;
+
+    output::finish_spinner_success(&extraction_spinner, "PRD extracted!");
 
     let cleaned = clean_json_response(&json_response)
         .context("Failed to extract JSON from agent response")?;
@@ -102,7 +169,8 @@ pub async fn run_plan_command(
     display_prd_summary(&prd);
 
     eprint!(
-        "[ramph] Save this PRD to {}? (y/n): ",
+        "\n{} Save this PRD to {}? (y/n): ",
+        "?".cyan().bold(),
         output_path.display()
     );
     io::stdout().flush()?;
@@ -111,15 +179,12 @@ pub async fn run_plan_command(
     io::stdin().read_line(&mut input)?;
 
     if input.trim().to_lowercase() != "y" {
-        eprintln!("[ramph] PRD not saved. Exiting.");
+        output::warn("PRD not saved. Exiting.");
         return Ok(());
     }
 
     save_prd(&output_path, &prd).context("Failed to save PRD")?;
-    eprintln!(
-        "[ramph] PRD saved successfully to {}!",
-        output_path.display()
-    );
+    output::success(&format!("PRD saved to {}!", output_path.display()));
 
     Ok(())
 }

@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 mod amp;
+mod output;
 mod prompts;
 mod types;
 mod workflows;
@@ -12,6 +13,18 @@ mod workflows;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    /// Enable verbose output (show tool calls, debug info)
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
+    /// Minimal output for CI (no spinners, colors, or progress bars)
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
+    /// Disable colored output
+    #[arg(long, global = true)]
+    no_color: bool,
 }
 
 #[derive(Subcommand)]
@@ -62,6 +75,15 @@ struct PlanArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    let mode = if cli.quiet {
+        output::OutputMode::Quiet
+    } else if cli.verbose {
+        output::OutputMode::Verbose
+    } else {
+        output::OutputMode::Normal
+    };
+    output::init(mode, cli.no_color);
 
     match cli.command {
         Commands::Run(args) => {

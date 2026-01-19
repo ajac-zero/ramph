@@ -1,0 +1,16 @@
+{
+  "branchName": "feature/my-feature",
+  "stories": [
+    {
+      "id": "STORY-001",
+      "title": "Example story",
+      "description": "This is an example story. Replace with your actual tasks.",
+      "priority": 1,
+      "passes": false,
+      "acceptance_criteria": [
+        "Criterion 1",
+        "Criterion 2"
+      ]
+    }
+  ]
+}

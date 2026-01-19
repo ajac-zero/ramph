@@ -1,7 +1,10 @@
 [package]
 name = "ramph"
+description = "A ralph implemenation for Amp"
+repository = "https://github.com/ajac-zero/ramph"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 amp-sdk = "0.1"
